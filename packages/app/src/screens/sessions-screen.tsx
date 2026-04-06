@@ -2,13 +2,14 @@ import { useMemo, useState, useCallback, useEffect } from "react";
 import { View, Text } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
 import { router } from "expo-router";
-import { StyleSheet } from "react-native-unistyles";
-import { ChevronLeft } from "lucide-react-native";
+import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { ChevronLeft, RotateCcw } from "lucide-react-native";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { Button } from "@/components/ui/button";
 import { AgentList } from "@/components/agent-list";
 import { useAllAgentsList } from "@/hooks/use-all-agents-list";
 import { buildHostOpenProjectRoute } from "@/utils/host-routes";
+import { ResumeSessionModal } from "@/components/resume-session-modal";
 
 export function SessionsScreen({ serverId }: { serverId: string }) {
   const isFocused = useIsFocused();
@@ -21,6 +22,7 @@ export function SessionsScreen({ serverId }: { serverId: string }) {
 }
 
 function SessionsScreenContent({ serverId }: { serverId: string }) {
+  const { theme } = useUnistyles();
   const { agents, isRevalidating, refreshAll } = useAllAgentsList({
     serverId,
     includeArchived: true,
@@ -28,6 +30,7 @@ function SessionsScreenContent({ serverId }: { serverId: string }) {
 
   // Track user-initiated refresh to avoid showing spinner on background revalidation
   const [isManualRefresh, setIsManualRefresh] = useState(false);
+  const [isResumeModalVisible, setIsResumeModalVisible] = useState(false);
 
   const handleRefresh = useCallback(() => {
     setIsManualRefresh(true);
@@ -45,6 +48,18 @@ function SessionsScreenContent({ serverId }: { serverId: string }) {
     return [...agents].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }, [agents]);
 
+  const resumeFooter = (
+    <View style={{ padding: theme.spacing[4] }}>
+      <Button
+        variant="ghost"
+        leftIcon={<RotateCcw size={16} color={theme.colors.foregroundMuted} />}
+        onPress={() => setIsResumeModalVisible(true)}
+      >
+        Resume by session ID
+      </Button>
+    </View>
+  );
+
   return (
     <View style={styles.container}>
       <MenuHeader title="Sessions" />
@@ -58,6 +73,7 @@ function SessionsScreenContent({ serverId }: { serverId: string }) {
           >
             Back
           </Button>
+          {resumeFooter}
         </View>
       ) : (
         <AgentList
@@ -66,8 +82,14 @@ function SessionsScreenContent({ serverId }: { serverId: string }) {
           isRefreshing={isManualRefresh && isRevalidating}
           onRefresh={handleRefresh}
           showAttentionIndicator={false}
+          listFooterComponent={resumeFooter}
         />
       )}
+      <ResumeSessionModal
+        visible={isResumeModalVisible}
+        onClose={() => setIsResumeModalVisible(false)}
+        serverId={serverId}
+      />
     </View>
   );
 }
