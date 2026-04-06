@@ -45,20 +45,31 @@ export function polyfillCrypto(): void {
     (globalThis as any).crypto = target;
   }
 
-  if (typeof (globalThis as any).crypto?.randomUUID !== "function") {
-    if (!globalThis.crypto) {
-      (globalThis as any).crypto = {} as Crypto;
-    }
-    globalThis.crypto.randomUUID = () =>
-      ExpoCrypto.randomUUID() as `${string}-${string}-${string}-${string}-${string}`;
-  }
-
+  // Install getRandomValues first — the randomUUID polyfill below depends on it.
   if (typeof (globalThis as any).crypto?.getRandomValues !== "function") {
     if (!globalThis.crypto) {
       (globalThis as any).crypto = {} as Crypto;
     }
     globalThis.crypto.getRandomValues = <T extends ArrayBufferView>(array: T): T => {
       return ExpoCrypto.getRandomValues(array as any) as T;
+    };
+  }
+
+  if (typeof (globalThis as any).crypto?.randomUUID !== "function") {
+    if (!globalThis.crypto) {
+      (globalThis as any).crypto = {} as Crypto;
+    }
+    // Implement UUID v4 directly using getRandomValues to avoid the recursive
+    // loop: ExpoCrypto.randomUUID() calls getCrypto().randomUUID() which is
+    // this very polyfill again (since window.crypto.randomUUID is absent in
+    // non-secure HTTP contexts).
+    globalThis.crypto.randomUUID = (): `${string}-${string}-${string}-${string}-${string}` => {
+      const bytes = new Uint8Array(16);
+      globalThis.crypto.getRandomValues(bytes);
+      bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+      bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant RFC4122
+      const h = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+      return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
     };
   }
 }

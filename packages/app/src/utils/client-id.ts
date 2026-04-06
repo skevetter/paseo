@@ -6,14 +6,13 @@ let cachedClientId: string | null = null;
 let inFlightClientId: Promise<string> | null = null;
 
 function generateClientId(): string {
-  const randomUuid = (() => {
-    const cryptoObj = globalThis.crypto as { randomUUID?: () => string } | undefined;
-    if (cryptoObj && typeof cryptoObj.randomUUID === "function") {
-      return cryptoObj.randomUUID().replace(/-/g, "");
-    }
-    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
-  })();
-  return `cid_${randomUuid}`;
+  // Avoid globalThis.crypto.randomUUID — Expo web builds install a polyfill
+  // that calls back through globalThis.crypto, causing infinite recursion.
+  // Math.random() + Date.now() gives sufficient uniqueness for a device ID.
+  const part1 = Date.now().toString(36);
+  const part2 = Math.random().toString(36).slice(2);
+  const part3 = Math.random().toString(36).slice(2);
+  return `cid_${part1}${part2}${part3}`;
 }
 
 function normalizeStoredClientId(value: unknown): string | null {

@@ -29,17 +29,11 @@ describe("client-id", () => {
   it("creates and persists a client id when missing", async () => {
     asyncStorageMock.getItem.mockResolvedValue(null);
     asyncStorageMock.setItem.mockResolvedValue();
-    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
-      "12345678-1234-1234-1234-1234567890ab",
-    );
 
     const mod = await import("./client-id");
     const key = await mod.getOrCreateClientId();
 
-    expect(key).toBe("cid_123456781234123412341234567890ab");
-    expect(asyncStorageMock.setItem).toHaveBeenCalledWith(
-      "@paseo:client-id-v1",
-      "cid_123456781234123412341234567890ab",
-    );
+    expect(key).toMatch(/^cid_/);
+    expect(asyncStorageMock.setItem).toHaveBeenCalledWith("@paseo:client-id-v1", key);
   });
 });
