@@ -6012,7 +6012,8 @@ export class Session {
   }
 
   private async reconcileAndEmitWorkspaceUpdates(): Promise<void> {
-    if (!this.workspaceUpdatesSubscription) {
+    const subscription = this.workspaceUpdatesSubscription;
+    if (!subscription) {
       return;
     }
     try {
@@ -6020,9 +6021,16 @@ export class Session {
       if (changedWorkspaceIds.size === 0) {
         return;
       }
-      await this.emitWorkspaceUpdatesForWorkspaceIds(changedWorkspaceIds, {
-        skipReconcile: true,
-      });
+      const all = await this.listWorkspaceDescriptorsSnapshot();
+      const descriptorsByWorkspaceId = new Map(all.map((entry) => [entry.id, entry] as const));
+      for (const workspaceId of changedWorkspaceIds) {
+        const workspace = descriptorsByWorkspaceId.get(workspaceId) ?? null;
+        if (workspace && this.matchesWorkspaceFilter({ workspace, filter: subscription.filter })) {
+          this.bufferOrEmitWorkspaceUpdate(subscription, { kind: "upsert", workspace });
+        } else {
+          this.bufferOrEmitWorkspaceUpdate(subscription, { kind: "remove", id: workspaceId });
+        }
+      }
     } catch (error) {
       this.sessionLogger.error({ err: error }, "Background workspace reconciliation failed");
     }
