@@ -2879,12 +2879,15 @@ class ClaudeAgentSession implements AgentSession {
     if (this.claudeSessionId === sessionId) {
       return null;
     }
-    // Session ID changed mid-stream (e.g. a hook caused Claude to restart
-    // with a new session). Accept the new ID and continue — the turn should
-    // not be failed just because the underlying subprocess cycled.
-    this.logger.warn(
-      { existingSessionId: this.claudeSessionId, newSessionId: sessionId },
-      "Claude session ID changed in message; accepting new session",
+    // Reset before throwing so the next query starts fresh instead of
+    // looping: without this, every resume attempt would get a new session ID
+    // from Claude and re-trigger the same overwrite error indefinitely.
+    const existingId = this.claudeSessionId;
+    this.claudeSessionId = null;
+    throw new Error(
+      `CRITICAL: Claude session ID overwrite detected! ` +
+        `Existing: ${existingId}, New: ${sessionId}. ` +
+        `This indicates a session identity corruption bug.`,
     );
     this.claudeSessionId = sessionId;
     this.persistence = null;
@@ -2923,11 +2926,13 @@ class ClaudeAgentSession implements AgentSession {
     } else if (existingSessionId === newSessionId) {
       this.logger.debug({ sessionId: newSessionId }, "Claude session ID unchanged (same value)");
     } else {
-      // Session ID changed in an init message (e.g. a hook restarted Claude
-      // with a new session mid-turn). Accept the new ID and continue.
-      this.logger.warn(
-        { existingSessionId, newSessionId },
-        "Claude session ID changed in init message; accepting new session",
+      // Reset before throwing so the next query starts fresh instead of
+      // looping on resume attempts that always yield a different session ID.
+      this.claudeSessionId = null;
+      throw new Error(
+        `CRITICAL: Claude session ID overwrite detected! ` +
+          `Existing: ${existingSessionId}, New: ${newSessionId}. ` +
+          `This indicates a session identity corruption bug.`,
       );
       this.claudeSessionId = newSessionId;
       threadStartedSessionId = newSessionId;
