@@ -6425,12 +6425,14 @@ export class Session {
           error: null,
         },
       });
-      void this.emitWorkspaceUpdateForCwd(existing.cwd).catch((error) => {
-        this.sessionLogger.error(
-          { err: error, workspaceId: request.workspaceId },
-          "Failed to emit workspace update after archive",
-        );
-      });
+      const subscription = this.workspaceUpdatesSubscription;
+      if (subscription) {
+        this.bufferOrEmitWorkspaceUpdate(subscription, {
+          kind: "remove",
+          id: request.workspaceId,
+        });
+      }
+      void this.reconcileAndEmitWorkspaceUpdates();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to archive workspace";
       this.sessionLogger.error(

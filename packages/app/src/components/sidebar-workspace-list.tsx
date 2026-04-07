@@ -1509,9 +1509,16 @@ function ProjectBlock({
       setIsRemovingProject(true);
       try {
         for (const ws of project.workspaces) {
-          const payload = await client.archiveWorkspace(ws.workspaceId);
-          if (payload.error) {
-            throw new Error(payload.error);
+          if (ws.workspaceKind === "worktree") {
+            const payload = await client.archivePaseoWorktree({ worktreePath: ws.workspaceId });
+            if (payload.error) {
+              throw new Error(payload.error.message);
+            }
+          } else {
+            const payload = await client.archiveWorkspace(ws.workspaceId);
+            if (payload.error) {
+              throw new Error(payload.error);
+            }
           }
         }
       } catch (error) {
