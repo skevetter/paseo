@@ -6416,7 +6416,6 @@ export class Session {
       }
       const archivedAt = new Date().toISOString();
       await this.archiveWorkspaceRecord(request.workspaceId, archivedAt);
-      await this.emitWorkspaceUpdateForCwd(existing.cwd);
       this.emit({
         type: "archive_workspace_response",
         payload: {
@@ -6425,6 +6424,12 @@ export class Session {
           archivedAt,
           error: null,
         },
+      });
+      void this.emitWorkspaceUpdateForCwd(existing.cwd).catch((error) => {
+        this.sessionLogger.error(
+          { err: error, workspaceId: request.workspaceId },
+          "Failed to emit workspace update after archive",
+        );
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to archive workspace";
