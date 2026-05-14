@@ -48,7 +48,11 @@ import type {
   CreatePaseoWorktreeWorkflowResult,
 } from "../worktree-session.js";
 import type { ScheduleService } from "../schedule/service.js";
-import { ScheduleSummarySchema, StoredScheduleSchema } from "../schedule/types.js";
+import {
+  ScheduleRunSchema,
+  ScheduleSummarySchema,
+  StoredScheduleSchema,
+} from "../schedule/types.js";
 import type { ProviderDefinition } from "./provider-registry.js";
 import { getAgentProviderDefinition } from "./provider-manifest.js";
 import { resolveAndValidateCreateAgentMode } from "./create-agent-mode.js";
@@ -1758,6 +1762,136 @@ export async function createAgentMcpServer(options: AgentMcpServerOptions): Prom
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),
+      };
+    },
+  );
+
+  server.registerTool(
+    "update_schedule",
+    {
+      title: "Update schedule",
+      description:
+        "Update an existing schedule. Only provided fields are changed; omitted fields remain unchanged.",
+      inputSchema: {
+        id: z.string(),
+        every: z.string().optional().describe("New interval duration string (e.g. 5m, 1h)."),
+        cron: z.string().optional().describe("New cron expression."),
+        name: z.string().nullable().optional().describe("New name (null to clear)."),
+        prompt: z.string().trim().min(1).optional().describe("New prompt text."),
+        maxRuns: z
+          .number()
+          .int()
+          .positive()
+          .nullable()
+          .optional()
+          .describe("New max runs limit (null to clear)."),
+        provider: z
+          .string()
+          .trim()
+          .min(1)
+          .optional()
+          .describe("New provider for new-agent target."),
+        model: z
+          .string()
+          .trim()
+          .min(1)
+          .nullable()
+          .optional()
+          .describe("New model for new-agent target (null to clear)."),
+        cwd: z.string().trim().min(1).optional().describe("New cwd for new-agent target."),
+      },
+      outputSchema: StoredScheduleSchema.shape,
+    },
+    async ({ id, every, cron, name, prompt, maxRuns, provider, model, cwd }) => {
+      if (!scheduleService) {
+        throw new Error("Schedule service is not configured");
+      }
+
+      if (every !== undefined && cron !== undefined) {
+        throw new Error("Specify at most one of every or cron");
+      }
+
+      let cadence:
+        | { type: "every"; everyMs: number }
+        | { type: "cron"; expression: string }
+        | undefined;
+      if (every !== undefined) {
+        cadence = { type: "every" as const, everyMs: parseDurationString(every) };
+      } else if (cron !== undefined) {
+        cadence = { type: "cron" as const, expression: cron.trim() };
+      }
+
+      const hasNewAgentConfig = provider !== undefined || model !== undefined || cwd !== undefined;
+
+      const schedule = await scheduleService.update({
+        id,
+        ...(name !== undefined ? { name } : {}),
+        ...(prompt !== undefined ? { prompt } : {}),
+        ...(cadence !== undefined ? { cadence } : {}),
+        ...(maxRuns !== undefined ? { maxRuns } : {}),
+        ...(hasNewAgentConfig
+          ? {
+              newAgentConfig: {
+                ...(provider !== undefined ? { provider } : {}),
+                ...(model !== undefined ? { model } : {}),
+                ...(cwd !== undefined ? { cwd } : {}),
+              },
+            }
+          : {}),
+      });
+
+      return {
+        content: [],
+        structuredContent: ensureValidJson(schedule),
+      };
+    },
+  );
+
+  server.registerTool(
+    "schedule_logs",
+    {
+      title: "Schedule logs",
+      description: "Get the run history (logs) for a schedule.",
+      inputSchema: {
+        id: z.string(),
+      },
+      outputSchema: {
+        runs: z.array(ScheduleRunSchema),
+      },
+    },
+    async ({ id }) => {
+      if (!scheduleService) {
+        throw new Error("Schedule service is not configured");
+      }
+
+      const runs = await scheduleService.logs(id);
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ runs }),
+      };
+    },
+  );
+
+  server.registerTool(
+    "run_once_schedule",
+    {
+      title: "Run schedule once",
+      description:
+        "Immediately trigger a one-time execution of a schedule, outside its normal cadence.",
+      inputSchema: {
+        id: z.string(),
+      },
+      outputSchema: StoredScheduleSchema.shape,
+    },
+    async ({ id }) => {
+      if (!scheduleService) {
+        throw new Error("Schedule service is not configured");
+      }
+
+      const schedule = await scheduleService.runOnce(id);
+      return {
+        content: [],
+        structuredContent: ensureValidJson(schedule),
       };
     },
   );

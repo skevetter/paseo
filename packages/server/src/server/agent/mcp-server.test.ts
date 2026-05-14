@@ -13,7 +13,11 @@ import type { AgentStorage, StoredAgentRecord } from "./agent-storage.js";
 import type { ProviderDefinition } from "./provider-registry.js";
 import { AgentListItemPayloadSchema, AgentSnapshotPayloadSchema } from "../../shared/messages.js";
 import type { PersistedProjectRecord, PersistedWorkspaceRecord } from "../workspace-registry.js";
-import type { CreateScheduleInput, StoredSchedule } from "../schedule/types.js";
+import type {
+  CreateScheduleInput,
+  StoredSchedule,
+  UpdateScheduleInput,
+} from "../schedule/types.js";
 import type { ScheduleService } from "../schedule/service.js";
 import type { WorkspaceGitService } from "../workspace-git-service.js";
 import {
@@ -1668,6 +1672,236 @@ describe("create_schedule MCP tool", () => {
           },
         },
       }),
+    );
+  });
+});
+
+describe("update_schedule MCP tool", () => {
+  const logger = createTestLogger();
+
+  function makeStoredSchedule(): StoredSchedule {
+    return {
+      id: "schedule-1",
+      name: "test schedule",
+      prompt: "say hello",
+      cadence: { type: "every", everyMs: 300000 },
+      target: { type: "new-agent", config: { provider: "claude", cwd: "/tmp" } },
+      status: "active",
+      createdAt: "2026-04-11T00:00:00.000Z",
+      updatedAt: "2026-04-11T00:00:00.000Z",
+      nextRunAt: "2026-04-11T00:05:00.000Z",
+      lastRunAt: null,
+      pausedAt: null,
+      expiresAt: null,
+      maxRuns: null,
+      runs: [],
+    };
+  }
+
+  it("calls scheduleService.update with correct input", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const stored = makeStoredSchedule();
+    const update = vi.fn(async (_input: UpdateScheduleInput) => ({
+      ...stored,
+      name: "updated name",
+      prompt: "new prompt",
+      updatedAt: "2026-04-11T01:00:00.000Z",
+    }));
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      scheduleService: { update } as unknown as ScheduleService,
+      logger,
+    });
+    const tool = registeredTool(server, "update_schedule");
+
+    await tool.handler({
+      id: "schedule-1",
+      name: "updated name",
+      prompt: "new prompt",
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      id: "schedule-1",
+      name: "updated name",
+      prompt: "new prompt",
+    });
+  });
+
+  it("converts every to cadence", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const stored = makeStoredSchedule();
+    const update = vi.fn(async (_input: UpdateScheduleInput) => stored);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      scheduleService: { update } as unknown as ScheduleService,
+      logger,
+    });
+    const tool = registeredTool(server, "update_schedule");
+
+    await tool.handler({
+      id: "schedule-1",
+      every: "10m",
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      id: "schedule-1",
+      cadence: { type: "every", everyMs: 600000 },
+    });
+  });
+
+  it("rejects both every and cron", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const update = vi.fn();
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      scheduleService: { update } as unknown as ScheduleService,
+      logger,
+    });
+    const tool = registeredTool(server, "update_schedule");
+
+    await expect(
+      tool.handler({
+        id: "schedule-1",
+        every: "5m",
+        cron: "* * * * *",
+      }),
+    ).rejects.toThrow("Specify at most one of every or cron");
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("passes newAgentConfig when provider/model/cwd are given", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const stored = makeStoredSchedule();
+    const update = vi.fn(async (_input: UpdateScheduleInput) => stored);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      scheduleService: { update } as unknown as ScheduleService,
+      logger,
+    });
+    const tool = registeredTool(server, "update_schedule");
+
+    await tool.handler({
+      id: "schedule-1",
+      provider: "codex",
+      model: "gpt-5.4",
+      cwd: "/home/user/project",
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      id: "schedule-1",
+      newAgentConfig: {
+        provider: "codex",
+        model: "gpt-5.4",
+        cwd: "/home/user/project",
+      },
+    });
+  });
+});
+
+describe("schedule_logs MCP tool", () => {
+  const logger = createTestLogger();
+
+  function makeRun(overrides: Partial<{ id: string; status: string }> = {}) {
+    return {
+      id: overrides.id ?? "run-1",
+      scheduledFor: "2026-04-11T00:00:00.000Z",
+      startedAt: "2026-04-11T00:00:01.000Z",
+      endedAt: "2026-04-11T00:00:05.000Z",
+      status: overrides.status ?? "succeeded",
+      agentId: null,
+      output: "done",
+      error: null,
+    };
+  }
+
+  it("returns runs for a schedule", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const runs = [makeRun({ id: "run-1" }), makeRun({ id: "run-2", status: "failed" })];
+    const logs = vi.fn(async (_id: string) => runs);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      scheduleService: { logs } as unknown as ScheduleService,
+      logger,
+    });
+    const tool = registeredTool(server, "schedule_logs");
+
+    const result = await tool.handler({ id: "schedule-1" });
+
+    expect(logs).toHaveBeenCalledWith("schedule-1");
+    expect(result.structuredContent).toEqual({ runs });
+  });
+
+  it("throws when schedule service is not configured", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      logger,
+    });
+    const tool = registeredTool(server, "schedule_logs");
+
+    await expect(tool.handler({ id: "schedule-1" })).rejects.toThrow(
+      "Schedule service is not configured",
+    );
+  });
+});
+
+describe("run_once_schedule MCP tool", () => {
+  const logger = createTestLogger();
+
+  function makeStoredSchedule(): StoredSchedule {
+    return {
+      id: "schedule-1",
+      name: "test schedule",
+      prompt: "say hello",
+      cadence: { type: "every", everyMs: 300000 },
+      target: { type: "new-agent", config: { provider: "claude", cwd: "/tmp" } },
+      status: "active",
+      createdAt: "2026-04-11T00:00:00.000Z",
+      updatedAt: "2026-04-11T00:00:00.000Z",
+      nextRunAt: "2026-04-11T00:05:00.000Z",
+      lastRunAt: null,
+      pausedAt: null,
+      expiresAt: null,
+      maxRuns: null,
+      runs: [],
+    };
+  }
+
+  it("calls scheduleService.runOnce and returns schedule", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const stored = makeStoredSchedule();
+    const runOnce = vi.fn(async (_id: string) => stored);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      scheduleService: { runOnce } as unknown as ScheduleService,
+      logger,
+    });
+    const tool = registeredTool(server, "run_once_schedule");
+
+    const result = await tool.handler({ id: "schedule-1" });
+
+    expect(runOnce).toHaveBeenCalledWith("schedule-1");
+    expect(result.structuredContent).toEqual(stored);
+  });
+
+  it("throws when schedule service is not configured", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      logger,
+    });
+    const tool = registeredTool(server, "run_once_schedule");
+
+    await expect(tool.handler({ id: "schedule-1" })).rejects.toThrow(
+      "Schedule service is not configured",
     );
   });
 });
