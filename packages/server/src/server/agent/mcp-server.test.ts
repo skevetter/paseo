@@ -1772,7 +1772,7 @@ describe("update_schedule MCP tool", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
-  it("passes newAgentConfig when provider/model/cwd are given", async () => {
+  it("passes new-agent config and expiry updates", async () => {
     const { agentManager, agentStorage } = createTestDeps();
     const stored = makeStoredSchedule();
     const update = vi.fn(async (_input: UpdateScheduleInput) => stored);
@@ -1786,19 +1786,82 @@ describe("update_schedule MCP tool", () => {
 
     await tool.handler({
       id: "schedule-1",
-      provider: "codex",
-      model: "gpt-5.4",
+      provider: "codex/gpt-5.4",
+      mode: "full-access",
       cwd: "/home/user/project",
+      expiresIn: "1h",
     });
 
-    expect(update).toHaveBeenCalledWith({
+    const updateInput = update.mock.calls[0]?.[0];
+    expect(updateInput).toMatchObject({
       id: "schedule-1",
       newAgentConfig: {
         provider: "codex",
         model: "gpt-5.4",
+        modeId: "full-access",
         cwd: "/home/user/project",
       },
     });
+    expect(updateInput?.expiresAt).toEqual(expect.any(String));
+  });
+
+  it("clears model, mode, max runs, and expiry", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const stored = makeStoredSchedule();
+    const update = vi.fn(async (_input: UpdateScheduleInput) => stored);
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      scheduleService: { update } as unknown as ScheduleService,
+      logger,
+    });
+    const tool = registeredTool(server, "update_schedule");
+
+    await tool.handler({
+      id: "schedule-1",
+      model: null,
+      mode: null,
+      maxRuns: null,
+      clearExpires: true,
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      id: "schedule-1",
+      maxRuns: null,
+      expiresAt: null,
+      newAgentConfig: {
+        model: null,
+        modeId: null,
+      },
+    });
+  });
+
+  it("rejects conflicting model and expiry inputs", async () => {
+    const { agentManager, agentStorage } = createTestDeps();
+    const update = vi.fn();
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      scheduleService: { update } as unknown as ScheduleService,
+      logger,
+    });
+    const tool = registeredTool(server, "update_schedule");
+
+    await expect(
+      tool.handler({
+        id: "schedule-1",
+        provider: "codex/gpt-5.4",
+        model: "gpt-5.5",
+      }),
+    ).rejects.toThrow("Conflicting model values provided");
+    await expect(
+      tool.handler({
+        id: "schedule-1",
+        expiresIn: "1h",
+        clearExpires: true,
+      }),
+    ).rejects.toThrow("Specify at most one of expiresIn or clearExpires");
+    expect(update).not.toHaveBeenCalled();
   });
 });
 
@@ -1844,61 +1907,6 @@ describe("schedule_logs MCP tool", () => {
       logger,
     });
     const tool = registeredTool(server, "schedule_logs");
-
-    await expect(tool.handler({ id: "schedule-1" })).rejects.toThrow(
-      "Schedule service is not configured",
-    );
-  });
-});
-
-describe("run_once_schedule MCP tool", () => {
-  const logger = createTestLogger();
-
-  function makeStoredSchedule(): StoredSchedule {
-    return {
-      id: "schedule-1",
-      name: "test schedule",
-      prompt: "say hello",
-      cadence: { type: "every", everyMs: 300000 },
-      target: { type: "new-agent", config: { provider: "claude", cwd: "/tmp" } },
-      status: "active",
-      createdAt: "2026-04-11T00:00:00.000Z",
-      updatedAt: "2026-04-11T00:00:00.000Z",
-      nextRunAt: "2026-04-11T00:05:00.000Z",
-      lastRunAt: null,
-      pausedAt: null,
-      expiresAt: null,
-      maxRuns: null,
-      runs: [],
-    };
-  }
-
-  it("calls scheduleService.runOnce and returns schedule", async () => {
-    const { agentManager, agentStorage } = createTestDeps();
-    const stored = makeStoredSchedule();
-    const runOnce = vi.fn(async (_id: string) => stored);
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      scheduleService: { runOnce } as unknown as ScheduleService,
-      logger,
-    });
-    const tool = registeredTool(server, "run_once_schedule");
-
-    const result = await tool.handler({ id: "schedule-1" });
-
-    expect(runOnce).toHaveBeenCalledWith("schedule-1");
-    expect(result.structuredContent).toEqual(stored);
-  });
-
-  it("throws when schedule service is not configured", async () => {
-    const { agentManager, agentStorage } = createTestDeps();
-    const server = await createAgentMcpServer({
-      agentManager,
-      agentStorage,
-      logger,
-    });
-    const tool = registeredTool(server, "run_once_schedule");
 
     await expect(tool.handler({ id: "schedule-1" })).rejects.toThrow(
       "Schedule service is not configured",

@@ -53,6 +53,7 @@ import {
   ScheduleSummarySchema,
   StoredScheduleSchema,
 } from "../schedule/types.js";
+import type { ScheduleCadence, UpdateScheduleInput } from "../schedule/types.js";
 import type { ProviderDefinition } from "./provider-registry.js";
 import { getAgentProviderDefinition } from "./provider-manifest.js";
 import { resolveAndValidateCreateAgentMode } from "./create-agent-mode.js";
@@ -257,6 +258,113 @@ function resolveScheduleProviderAndModel(params: {
   return {
     provider: provider,
     model,
+  };
+}
+
+function resolveScheduleUpdateProviderAndModel(params: {
+  provider?: string;
+  model?: string | null;
+}): { provider?: string; model?: string | null } {
+  const providerInput = params.provider?.trim();
+  const modelInput = typeof params.model === "string" ? params.model.trim() : params.model;
+
+  if (params.model !== undefined && modelInput === "") {
+    throw new Error("model cannot be empty");
+  }
+
+  if (!providerInput) {
+    return params.model !== undefined ? { model: modelInput } : {};
+  }
+
+  const slashIndex = providerInput.indexOf("/");
+  if (slashIndex === -1) {
+    return {
+      provider: providerInput,
+      ...(params.model !== undefined ? { model: modelInput } : {}),
+    };
+  }
+
+  const provider = providerInput.slice(0, slashIndex).trim();
+  const modelFromProvider = providerInput.slice(slashIndex + 1).trim();
+  if (!provider || !modelFromProvider) {
+    throw new Error("provider must be <provider> or <provider>/<model>");
+  }
+  if (params.model === null) {
+    throw new Error("provider specifies a model but model is null");
+  }
+  if (typeof modelInput === "string" && modelInput !== modelFromProvider) {
+    throw new Error("Conflicting model values provided");
+  }
+
+  return {
+    provider,
+    model: modelInput ?? modelFromProvider,
+  };
+}
+
+interface ScheduleUpdateToolInput {
+  id: string;
+  every?: string;
+  cron?: string;
+  name?: string | null;
+  prompt?: string;
+  maxRuns?: number | null;
+  provider?: string;
+  model?: string | null;
+  mode?: string | null;
+  cwd?: string;
+  expiresIn?: string;
+  clearExpires?: boolean;
+}
+
+function resolveScheduleUpdateCadence(input: ScheduleUpdateToolInput): ScheduleCadence | undefined {
+  if (input.every !== undefined && input.cron !== undefined) {
+    throw new Error("Specify at most one of every or cron");
+  }
+  if (input.every !== undefined) {
+    return { type: "every", everyMs: parseDurationString(input.every) };
+  }
+  if (input.cron !== undefined) {
+    return { type: "cron", expression: input.cron.trim() };
+  }
+  return undefined;
+}
+
+function resolveScheduleUpdateExpiresAt(input: ScheduleUpdateToolInput): string | null | undefined {
+  if (input.expiresIn !== undefined && input.clearExpires) {
+    throw new Error("Specify at most one of expiresIn or clearExpires");
+  }
+  if (input.expiresIn !== undefined) {
+    return new Date(Date.now() + parseDurationString(input.expiresIn)).toISOString();
+  }
+  if (input.clearExpires) {
+    return null;
+  }
+  return undefined;
+}
+
+function buildScheduleUpdateInput(input: ScheduleUpdateToolInput): UpdateScheduleInput {
+  const cadence = resolveScheduleUpdateCadence(input);
+  const expiresAt = resolveScheduleUpdateExpiresAt(input);
+  const providerModelPatch = resolveScheduleUpdateProviderAndModel({
+    provider: input.provider,
+    model: input.model,
+  });
+  const newAgentConfig = {
+    ...(providerModelPatch.provider !== undefined ? { provider: providerModelPatch.provider } : {}),
+    ...(providerModelPatch.model !== undefined ? { model: providerModelPatch.model } : {}),
+    ...(input.mode !== undefined ? { modeId: input.mode } : {}),
+    ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+  };
+
+  return {
+    id: input.id,
+    ...(input.name !== undefined ? { name: input.name } : {}),
+    ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
+    ...(cadence !== undefined ? { cadence } : {}),
+    ...(input.maxRuns !== undefined ? { maxRuns: input.maxRuns } : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
+    ...(Object.keys(newAgentConfig).length > 0 ? { newAgentConfig } : {}),
   };
 }
 
@@ -1798,47 +1906,28 @@ export async function createAgentMcpServer(options: AgentMcpServerOptions): Prom
           .nullable()
           .optional()
           .describe("New model for new-agent target (null to clear)."),
+        mode: z
+          .string()
+          .trim()
+          .min(1)
+          .nullable()
+          .optional()
+          .describe("New mode for new-agent target (null to clear)."),
         cwd: z.string().trim().min(1).optional().describe("New cwd for new-agent target."),
+        expiresIn: z
+          .string()
+          .optional()
+          .describe("New relative expiry duration (for example: 1h, 2d)."),
+        clearExpires: z.boolean().optional().describe("Clear any schedule expiry."),
       },
       outputSchema: StoredScheduleSchema.shape,
     },
-    async ({ id, every, cron, name, prompt, maxRuns, provider, model, cwd }) => {
+    async (input) => {
       if (!scheduleService) {
         throw new Error("Schedule service is not configured");
       }
 
-      if (every !== undefined && cron !== undefined) {
-        throw new Error("Specify at most one of every or cron");
-      }
-
-      let cadence:
-        | { type: "every"; everyMs: number }
-        | { type: "cron"; expression: string }
-        | undefined;
-      if (every !== undefined) {
-        cadence = { type: "every" as const, everyMs: parseDurationString(every) };
-      } else if (cron !== undefined) {
-        cadence = { type: "cron" as const, expression: cron.trim() };
-      }
-
-      const hasNewAgentConfig = provider !== undefined || model !== undefined || cwd !== undefined;
-
-      const schedule = await scheduleService.update({
-        id,
-        ...(name !== undefined ? { name } : {}),
-        ...(prompt !== undefined ? { prompt } : {}),
-        ...(cadence !== undefined ? { cadence } : {}),
-        ...(maxRuns !== undefined ? { maxRuns } : {}),
-        ...(hasNewAgentConfig
-          ? {
-              newAgentConfig: {
-                ...(provider !== undefined ? { provider } : {}),
-                ...(model !== undefined ? { model } : {}),
-                ...(cwd !== undefined ? { cwd } : {}),
-              },
-            }
-          : {}),
-      });
+      const schedule = await scheduleService.update(buildScheduleUpdateInput(input));
 
       return {
         content: [],
@@ -1868,30 +1957,6 @@ export async function createAgentMcpServer(options: AgentMcpServerOptions): Prom
       return {
         content: [],
         structuredContent: ensureValidJson({ runs }),
-      };
-    },
-  );
-
-  server.registerTool(
-    "run_once_schedule",
-    {
-      title: "Run schedule once",
-      description:
-        "Immediately trigger a one-time execution of a schedule, outside its normal cadence.",
-      inputSchema: {
-        id: z.string(),
-      },
-      outputSchema: StoredScheduleSchema.shape,
-    },
-    async ({ id }) => {
-      if (!scheduleService) {
-        throw new Error("Schedule service is not configured");
-      }
-
-      const schedule = await scheduleService.runOnce(id);
-      return {
-        content: [],
-        structuredContent: ensureValidJson(schedule),
       };
     },
   );
